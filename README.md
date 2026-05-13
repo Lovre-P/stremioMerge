@@ -37,7 +37,8 @@ The merge is one-way and conservative.
 - Retries temporary API and network failures.
 - Uses batch imports for large libraries.
 - Falls back to single-item imports if a batch fails.
-- Keeps credentials in memory only and prompts passwords through `getpass`.
+- Supports email/password login or pasted Stremio auth keys.
+- Keeps credentials in memory only and prompts passwords/auth keys through `getpass`.
 - Prints a clear merge summary before making changes.
 
 ## Requirements
@@ -90,9 +91,16 @@ python stremio_merge.py
 
 You will be asked for:
 
-1. Source account email and password
-2. Destination account email and password
+1. Source account login method
+2. Destination account login method
 3. Final confirmation after the merge preview
+
+For each account, choose one of these login methods:
+
+| Option | Use when |
+| --- | --- |
+| `1) Email + password` | You normally log into Stremio with an email and password |
+| `2) Stremio auth key` | You use Facebook, Apple, or another one-click sign-in method |
 
 Example flow:
 
@@ -104,12 +112,25 @@ Example flow:
 ==================================================
 
 --- SOURCE account (copy FROM) ---
+Login method:
+  1) Email + password
+  2) Stremio auth key (for Facebook/Apple/one-click sign-in)
+Choose login method (1/2, default 1):
 Email:
 Password:
 
 --- DESTINATION account (copy TO) ---
-Email:
-Password:
+Login method:
+  1) Email + password
+  2) Stremio auth key (for Facebook/Apple/one-click sign-in)
+Choose login method (1/2, default 1): 2
+Auth key:
+
+--- Fetching data from source ---
+  Addons: 12 | Library: 164
+
+--- Fetching data from destination ---
+  Addons: 8 | Library: 72
 
 --- Summary ---
   Addons to add:        4
@@ -120,6 +141,82 @@ Proceed with merge? (y/n):
 ```
 
 Type `y` to start the merge. Any other input cancels without writing changes.
+
+## Facebook / Apple / One-Click Sign-In
+
+Facebook and Apple users may not have a Stremio password that works with the
+direct API login endpoint. For these accounts, use the auth-key login option.
+
+1. Open [Stremio Web](https://web.stremio.com/) in your browser.
+2. Log in using Facebook, Apple, or your normal one-click sign-in option.
+3. Open browser developer tools.
+4. Go to the Console tab.
+5. Paste this snippet and press Enter:
+
+```javascript
+(() => {
+  const readJson = (value) => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+
+  const profiles = [];
+  const directProfile = readJson(localStorage.getItem("profile"));
+  if (directProfile?.auth?.key) {
+    profiles.push(directProfile);
+  }
+
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const storageKey = localStorage.key(i);
+    const value = readJson(localStorage.getItem(storageKey));
+    if (value?.auth?.key) {
+      profiles.push(value);
+    }
+  }
+
+  const authKey = profiles[0]?.auth?.key;
+  if (!authKey) {
+    console.error("No Stremio auth key found. Make sure you are logged into Stremio Web in this browser.");
+    return;
+  }
+
+  console.log(authKey);
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(authKey);
+    console.log("Auth key copied to clipboard.");
+  }
+})();
+```
+
+6. Run this script and choose `2) Stremio auth key`.
+7. Paste the copied auth key when prompted.
+
+The current official Stremio Web/Core source exposes Facebook and Apple auth
+paths. Google login was not visible in the official source checked for this
+feature. If Stremio later adds Google and still stores a normal `authKey`, this
+auth-key mode should work for Google accounts too.
+
+The auth key is a session secret. Treat it like a password: do not share it,
+publish it, or paste it into tools you do not trust.
+
+## Email / Password Login
+
+If you log into Stremio with email and password, choose option `1`. The script
+first tries Stremio's common hashed-password login format, then falls back to the
+plain password format for compatibility.
+
+```text
+--- SOURCE account (copy FROM) ---
+Login method:
+  1) Email + password
+  2) Stremio auth key (for Facebook/Apple/one-click sign-in)
+Choose login method (1/2, default 1):
+Email:
+Password:
+```
 
 ## How Progress Is Compared
 
@@ -145,7 +242,9 @@ The script is intentionally simple and contained in one file:
 | --- | --- | --- |
 | Create HTTP client | `make_session()` | Builds a reusable `requests` session with retries |
 | Call Stremio API | `api_post()` | Sends JSON POST requests and normalizes request failures |
-| Authenticate | `login()` | Logs in and returns a temporary Stremio auth key |
+| Password login | `login_with_password()` | Logs in with email/password and returns a temporary Stremio auth key |
+| Auth-key login | `login_with_token()` | Validates a pasted auth key through `loginWithToken` |
+| Account prompt | `prompt_account_auth()` | Lets each account use password login or auth-key login |
 | Fetch library | `fetch_library()` | Downloads and normalizes library items by ID |
 | Fetch addons | `fetch_addons()` | Downloads the account addon collection |
 | Compare progress | `has_better_progress()` | Decides whether destination progress should be kept |
@@ -158,8 +257,14 @@ The script is intentionally simple and contained in one file:
 ### Login fails
 
 Check that the email and password are correct and that you can log into Stremio
-normally. If your account uses a login method that does not accept password
-authentication, the script may not be able to authenticate it.
+normally. If your account uses Facebook, Apple, or another one-click sign-in
+method, use option `2) Stremio auth key` instead of password login.
+
+### Auth key login fails
+
+Make sure the auth key was copied from a browser session that is currently
+logged into Stremio Web. If you logged out, cleared browser storage, or copied
+from the wrong browser profile, open Stremio Web again and generate a fresh key.
 
 ### The merge finishes but Stremio does not show changes
 
@@ -181,8 +286,11 @@ addon entries.
 ## Privacy And Security Notes
 
 - Passwords are entered through hidden terminal prompts.
+- Auth keys are entered through hidden terminal prompts.
 - Passwords and auth keys are not written to files by this script.
 - Account auth keys only live in memory during the script run.
+- A Stremio auth key can access your account through the Stremio API, so treat
+  it like a password.
 - The script uses Stremio account API endpoints directly, so use it only on
   machines and networks you trust.
 
