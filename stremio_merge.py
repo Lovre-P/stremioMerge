@@ -78,9 +78,9 @@ def api_post(url, payload):
                 return {"error": str(e)}
 
 
-def login(email, password):
+def login_with_password(email, password):
     """
-    Authenticate a Stremio account and return its auth key.
+    Authenticate a Stremio account with email/password and return its auth key.
 
     Stremio commonly accepts an MD5 hash of the password for login, so the first
     attempt mirrors that client behavior. The second attempt sends the plain
@@ -100,6 +100,59 @@ def login(email, password):
     if data2.get("result"):
         return data2["result"]["authKey"]
     return None
+
+
+def login_with_token(token):
+    """
+    Authenticate with an existing Stremio auth key and return a fresh auth key.
+
+    One-click sign-in users, such as Facebook or Apple users, may not have a
+    Stremio password they can enter here. The official Stremio API supports
+    validating an existing session token through loginWithToken, which lets this
+    script use the same merge workflow after the user pastes an auth key from an
+    already-authenticated Stremio session.
+    """
+    token = token.strip()
+    if not token:
+        return None
+
+    data = api_post(f"{API_BASE}/loginWithToken", {
+        "type": "LoginWithToken", "token": token
+    })
+    result = data.get("result")
+    if isinstance(result, dict) and result.get("authKey"):
+        return result["authKey"]
+    return None
+
+
+def prompt_account_auth(label):
+    """
+    Prompt for one account and return the auth key plus a display label.
+
+    Users can choose the existing email/password flow or paste an auth key from
+    an already logged-in Stremio session. Invalid menu choices are reprompted so
+    a mistyped selection does not accidentally fall through to the wrong method.
+    """
+    print(f"\n--- {label} ---")
+    print("Login method:")
+    print("  1) Email + password")
+    print("  2) Stremio auth key (for Facebook/Apple/one-click sign-in)")
+
+    while True:
+        choice = input("Choose login method (1/2, default 1): ").strip()
+        if choice == "":
+            choice = "1"
+
+        if choice == "1":
+            email = input("Email: ").strip()
+            password = getpass.getpass("Password: ")
+            return login_with_password(email, password), email
+
+        if choice == "2":
+            auth_key = getpass.getpass("Auth key: ").strip()
+            return login_with_token(auth_key), "auth key"
+
+        print("  [ERROR] Please choose 1 for email/password or 2 for auth key.")
 
 
 def fetch_library(auth_key):
@@ -321,27 +374,21 @@ def main():
     print("  (without replacing equal or better destination progress)")
     print("=" * 50)
 
-    # Source account
-    print("\n--- SOURCE account (copy FROM) ---")
-    src_email = input("Email: ").strip()
-    src_pass = getpass.getpass("Password: ")
-
-    src_auth = login(src_email, src_pass)
+    # Source account. The prompt supports email/password and pasted auth keys,
+    # but both paths return the same kind of auth key for the merge steps below.
+    src_auth, src_identity = prompt_account_auth("SOURCE account (copy FROM)")
     if not src_auth:
         print("[ERROR] Failed to login to source account")
         sys.exit(1)
-    print(f"[OK] Logged into source: {src_email}")
+    print(f"[OK] Logged into source: {src_identity}")
 
-    # Destination account
-    print("\n--- DESTINATION account (copy TO) ---")
-    dst_email = input("Email: ").strip()
-    dst_pass = getpass.getpass("Password: ")
-
-    dst_auth = login(dst_email, dst_pass)
+    # Destination account. The destination auth key is the only credential used
+    # for write requests after the user confirms the merge preview.
+    dst_auth, dst_identity = prompt_account_auth("DESTINATION account (copy TO)")
     if not dst_auth:
         print("[ERROR] Failed to login to destination account")
         sys.exit(1)
-    print(f"[OK] Logged into destination: {dst_email}")
+    print(f"[OK] Logged into destination: {dst_identity}")
 
     # Fetch data from both accounts before writing anything. Keeping reads and
     # writes separate makes the preview truthful and gives the user a final
